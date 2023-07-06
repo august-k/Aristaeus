@@ -16,42 +16,43 @@ BuildChoices:
     test_123:
         BotName: Test
         Cycle:
-            - DummyOpening
+            - CannonRush
 
     Protoss:
         BotName: ProtossRace
         Cycle:
-            - DummyOpening
+            - CannonRush
 
     Random:
         BotName: RandomRace
         Cycle:
-            - DummyOpening
+            - CannonRush
 
     Terran:
         BotName: TerranRace
         Cycle:
-            - DummyOpening
+            - CannonRush
 
     Zerg:
         BotName: ZergRace
         Cycle:
-            - DummyOpening
+            - CannonRush
 
     # Can also use specific opponent ids (overrides race options above)
     a_bot_opponent_id_from_aiarena:
         BotName: QueenBot
         Cycle:
-            - DummyOpening
+            - CannonRush
 
 Builds:
-    DummyOpening:
+    CannonRush:
         # Build constant workers till x supply
         ConstantWorkerProductionTill: 0
         OpeningBuildOrder:
             # Example: ['12 worker', '13 worker', '14 supply', '14 worker', '15 chrono @ nexus',
             #           '15 worker', '16 gateway']
             # See docs: https://aressc2.github.io/ares-sc2/tutorials.html#build-runner-system
-            []
+            ['12 chrono @ nexus', '12 worker', '12 pylon @ ramp', '13 worker',
+             '14 forge @ ramp', '14 worker', '15 worker']
 
 
