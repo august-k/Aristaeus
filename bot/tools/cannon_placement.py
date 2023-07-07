@@ -14,7 +14,7 @@ from bot.consts import (
     TYPE_ID,
     WEIGHT,
 )
-from grids import modify_two_by_two
+from .grids import modify_two_by_two
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.position import Point2
@@ -42,11 +42,7 @@ class CannonPlacement:
         self.map_data: MapData = map_data
         self.basic_cannon_grid = self.map_data.get_walling_grid()
 
-        self.initial_cannon = (
-            Point2((95, 118))
-            if self.ai.enemy_start_locations[0].x > self.ai.townhalls[0].position.x
-            else Point2((49, 38))
-        )
+        self.initial_cannon = self.ai.enemy_start_locations[0].rounded
         self.initial_xbound = (
             int(max([0, self.initial_cannon.x - 20])),
             int(
@@ -87,7 +83,7 @@ class CannonPlacement:
 
         self.next_building: Optional[Dict[str, Union[Point2, UnitID]]] = None
 
-        with open("tools/hamming_weight_lookups.json", "r") as f:
+        with open("bot/tools/hamming_weight_lookups.json", "r") as f:
             hamming_lookup = json.load(f)
             self.hamming_lookup = {int(v): hamming_lookup[v] for v in hamming_lookup}
 
@@ -243,7 +239,7 @@ class CannonPlacement:
         modify_two_by_two(cannon_grid, cannon_placement, np.inf)
 
         if not self.wall_start_point:
-            # see if we can find a starting position
+            # try again after modifying the cannon grid
             self.wall_start_point = self.calculate_start_point(
                 self.initial_cannon, cannon_grid, {(89, 138)}
             )

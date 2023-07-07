@@ -5,9 +5,11 @@ description = ""
 authors = []
 readme = "README.md"
 packages = [{include = "ares-sc2/src/ares"}]
+build = "build.py"
 
 [tool.poetry.dependencies]
 ares-sc2 = { path = "ares-sc2", develop = false }
+MapAnalyzer = { path = "MapAnalyzer", develop = false }
 python = ">=3.11, <3.12"
 black = "^23.1.0"
 isort = "^5.12.0"

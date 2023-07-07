@@ -10,4 +10,4 @@ def modify_two_by_two(
     """Set a 2x2 building as unpathable for the given grid."""
     for i in [-1, 0]:
         for j in [-1, 0]:
-            grid[(location.x + i, location.y + j)] = weight
+            grid[(location[0] + i, location[1] + j)] = weight

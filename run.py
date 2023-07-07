@@ -51,20 +51,13 @@ def main():
         print(result, " against opponent ", opponentid)
     else:
         # Local game
-        map_list: List[str] = [
-            p.name.replace(f".{MAP_FILE_EXT}", "")
-            for p in Path(MAPS_PATH).glob(f"*.{MAP_FILE_EXT}")
-            if p.is_file()
-        ]
-        # alternative example code if finding the map path is problematic
         # map_list: List[str] = [
-        #     "BerlingradAIE",
-        #     "InsideAndOutAIE",
-        #     "MoondanceAIE",
-        #     "StargazersAIE",
-        #     "WaterfallAIE",
-        #     "HardwireAIE",
+        #     p.name.replace(f".{MAP_FILE_EXT}", "")
+        #     for p in Path(MAPS_PATH).glob(f"*.{MAP_FILE_EXT}")
+        #     if p.is_file()
         # ]
+        # alternative example code if finding the map path is problematic
+        map_list: List[str] = ["GresvanAIE"]
 
         random_race = random.choice([Race.Zerg, Race.Terran, Race.Protoss])
         print("Starting local game...")

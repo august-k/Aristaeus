@@ -1,11 +1,27 @@
 """Handle Cannon Rush tasks."""
 
-from typing import Dict, Set, TYPE_CHECKING, Any
+from typing import Dict, Set, TYPE_CHECKING, Any, Union, List
+
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.unit import Unit
+from sc2.units import Units
 
 from ares.consts import ManagerName, ManagerRequestType
+from ares.cython_extensions.units_utils import cy_closest_to
 from ares.managers.manager import Manager
 from ares.managers.manager_mediator import IManagerMediator, ManagerMediator
 from bot.tools.cannon_placement import CannonPlacement
+
+from bot.consts import (
+    BLOCKING,
+    DESIRABILITY_KERNEL,
+    INVALID_BLOCK,
+    LOCATION,
+    POINTS,
+    SCORE,
+    TYPE_ID,
+    WEIGHT,
+)
 
 from ares.managers.path_manager import MapData
 
@@ -15,6 +31,9 @@ if TYPE_CHECKING:
 
 class CannonRushManager(Manager, IManagerMediator):
     """Handle cannon rush tasks."""
+
+    map_data: MapData
+    cannon_placement: CannonPlacement
 
     def __init__(
         self,
@@ -44,16 +63,19 @@ class CannonRushManager(Manager, IManagerMediator):
                 **kwargs
             )
         }
-        self.map_data: MapData = self.manager_mediator.get_map_data_object
-        self.cannon_placement: CannonPlacement = CannonPlacement(ai, self.map_data)
         self.cannon_rush_worker_tags: Set[int] = set()
+        self.high_ground_pylon_established: bool = False
+
+    async def initialise(self) -> None:
+        self.map_data: MapData = self.manager_mediator.get_map_data_object
+        self.cannon_placement: CannonPlacement = CannonPlacement(self.ai, self.map_data)
 
     def manager_request(
         self,
         receiver: ManagerName,
         request: ManagerRequestType,
         reason: str = None,
-        **kwargs
+        **kwargs,
     ) -> Any:
         """To be implemented by managers that inherit from IManagerMediator interface.
 
@@ -87,6 +109,30 @@ class CannonRushManager(Manager, IManagerMediator):
         -------
 
         """
+        self.cannon_placement.update()
+        worker_units = [self.ai.unit_tag_dict[t] for t in self.cannon_rush_worker_tags]
+
+        # steal any idle ones
+        if not worker_units:
+            if idle_workers := self.ai.workers.idle.take(2):
+                self.cannon_rush_worker_tags = idle_workers.tags
+            return
+
+        next_building = self.cannon_placement.next_building
+        # nothing to place
+        if not next_building or self.ai.minerals < 100:
+            self._keep_workers_safe(worker_units)
+
+        # pylon placement procedures
+        if next_building[TYPE_ID] == UnitID.PYLON:
+            worker = cy_closest_to(next_building[LOCATION], worker_units)
+            self.manager_mediator.build_with_specific_worker(
+                worker=worker,
+                structure_type=UnitID.PYLON,
+                pos=next_building[LOCATION],
+            )
+
+    def _keep_workers_safe(self, units: Union[Units, List[Unit]]):
         pass
 
     def register_cannon_rush_worker(self, tag: int) -> None:
