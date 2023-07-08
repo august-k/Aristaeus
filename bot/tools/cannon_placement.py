@@ -122,7 +122,7 @@ class CannonPlacement:
                 LOCATION: self.initial_cannon,
                 TYPE_ID: UnitID.PHOTONCANNON,
             }
-        else:
+        elif self.current_walling_path:
             if next_building_location := self.get_next_walling_position():
                 self.next_building = {
                     LOCATION: next_building_location,
