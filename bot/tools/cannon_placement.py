@@ -1,9 +1,18 @@
 """Manage cannon placements."""
 import json
 from collections import defaultdict
+from os import getcwd, path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
+from MapAnalyzer import MapData
+from MapAnalyzer.Pather import draw_circle
+from sc2.bot_ai import BotAI
+from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.position import Point2
+from sc2.unit import Unit
+from scipy.signal import convolve2d
+
 from bot.consts import (
     BLOCKING,
     DESIRABILITY_KERNEL,
@@ -14,15 +23,8 @@ from bot.consts import (
     TYPE_ID,
     WEIGHT,
 )
-from .grids import modify_two_by_two
-from sc2.bot_ai import BotAI
-from sc2.ids.unit_typeid import UnitTypeId as UnitID
-from sc2.position import Point2
-from sc2.unit import Unit
-from scipy.signal import convolve2d
 
-from MapAnalyzer import MapData
-from MapAnalyzer.Pather import draw_circle
+from .grids import modify_two_by_two
 
 
 class CannonPlacement:
@@ -83,7 +85,8 @@ class CannonPlacement:
 
         self.next_building: Optional[Dict[str, Union[Point2, UnitID]]] = None
 
-        with open("bot/tools/hamming_weight_lookups.json", "r") as f:
+        __location__ = path.realpath(path.join(getcwd(), path.dirname(__file__)))
+        with open(path.join(__location__, "hamming_weight_lookups.json"), "r") as f:
             hamming_lookup = json.load(f)
             self.hamming_lookup = {int(v): hamming_lookup[v] for v in hamming_lookup}
 
@@ -119,7 +122,7 @@ class CannonPlacement:
                 LOCATION: self.initial_cannon,
                 TYPE_ID: UnitID.PHOTONCANNON,
             }
-        else:
+        elif self.current_walling_path:
             if next_building_location := self.get_next_walling_position():
                 self.next_building = {
                     LOCATION: next_building_location,
