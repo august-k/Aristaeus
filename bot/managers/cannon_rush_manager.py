@@ -1,13 +1,13 @@
 """Handle Cannon Rush tasks."""
 
-from typing import Dict, Set, TYPE_CHECKING, Any, Union, List
+from typing import Dict, Set, TYPE_CHECKING, Any, Union, List, Optional
 
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.unit import Unit
 from sc2.units import Units
 
-from ares.consts import ManagerName, ManagerRequestType
-from ares.cython_extensions.units_utils import cy_closest_to
+from ares.consts import ManagerName, ManagerRequestType, UnitRole, UnitTreeQueryType
+from ares.cython_extensions.units_utils import cy_closest_to, cy_sorted_by_distance_to
 from ares.managers.manager import Manager
 from ares.managers.manager_mediator import IManagerMediator, ManagerMediator
 from bot.tools.cannon_placement import CannonPlacement
@@ -15,6 +15,7 @@ from bot.tools.cannon_placement import CannonPlacement
 from bot.consts import (
     BLOCKING,
     DESIRABILITY_KERNEL,
+    FINAL_PLACEMENT,
     INVALID_BLOCK,
     LOCATION,
     POINTS,
@@ -109,31 +110,96 @@ class CannonRushManager(Manager, IManagerMediator):
         -------
 
         """
+        if not self.ai.build_order_runner.build_completed:
+            return
         self.cannon_placement.update()
         worker_units = [self.ai.unit_tag_dict[t] for t in self.cannon_rush_worker_tags]
 
         # steal any idle ones
         if not worker_units:
-            if idle_workers := self.ai.workers.idle.take(2):
-                self.cannon_rush_worker_tags = idle_workers.tags
+            if (
+                available_workers := self.manager_mediator.get_units_from_role(
+                    role=UnitRole.GATHERING
+                )
+                .filter(lambda u: not u.is_carrying_resource)
+                .take(2)
+            ):
+                self.cannon_rush_worker_tags = available_workers.tags
+                self.manager_mediator.batch_assign_role(
+                    tags=self.cannon_rush_worker_tags,
+                    role=UnitRole.CONTROL_GROUP_ONE,
+                )
             return
 
+        # make sure we're keeping these units
+        self.manager_mediator.batch_assign_role(
+            tags=self.cannon_rush_worker_tags,
+            role=UnitRole.CONTROL_GROUP_ONE,
+        )
         next_building = self.cannon_placement.next_building
         # nothing to place
         if not next_building or self.ai.minerals < 100:
             self._keep_workers_safe(worker_units)
+            return
 
         # pylon placement procedures
-        if next_building[TYPE_ID] == UnitID.PYLON:
-            worker = cy_closest_to(next_building[LOCATION], worker_units)
-            self.manager_mediator.build_with_specific_worker(
-                worker=worker,
-                structure_type=UnitID.PYLON,
-                pos=next_building[LOCATION],
-            )
+        # if next_building[TYPE_ID] == UnitID.PYLON:
+        #     worker = cy_closest_to(next_building[LOCATION], worker_units)
+        #     self.manager_mediator.build_with_specific_worker(
+        #         worker=worker,
+        #         structure_type=UnitID.PYLON,
+        #         pos=next_building[LOCATION],
+        #     )
+        #     self._keep_workers_safe([w for w in worker_units if w.tag != worker.tag])
+
+        if next_building:
+            used_tag = self.place_building(next_building, worker_units)
+            self._keep_workers_safe([w for w in worker_units if w.tag != used_tag])
 
     def _keep_workers_safe(self, units: Union[Units, List[Unit]]):
-        pass
+        for unit in units:
+            unit.move(self.cannon_placement.initial_cannon)
+
+    def place_building(
+        self, next_building: Dict, worker_units: Union[List[Unit], Units]
+    ) -> int:
+        """Place the next building.
+
+        Parameters
+        ----------
+        next_building : Dict
+            Dictionary containing information about the next building to place.
+        worker_units : Units
+            Available workers.
+
+        Returns
+        -------
+        int :
+            The tag of the worker that was used.
+
+        """
+        sorted_workers = cy_sorted_by_distance_to(
+            units=worker_units,
+            position=self.cannon_placement.initial_cannon
+            if next_building[FINAL_PLACEMENT]
+            else next_building[LOCATION],
+        )
+        used_worker = sorted_workers[0]
+
+        if not next_building[FINAL_PLACEMENT] or used_worker.distance_to(
+            self.cannon_placement.initial_cannon
+        ) < used_worker.distance_to(next_building[LOCATION]):
+            # we either don't need to worry about walling ourselves out OR we're on the
+            # correct side of the wall
+            self.manager_mediator.build_with_specific_worker(
+                worker=used_worker,
+                structure_type=next_building[TYPE_ID],
+                pos=next_building[LOCATION],
+            )
+        else:
+            # move so that we're on the correct side of the wall
+            used_worker.move(self.cannon_placement.initial_cannon)
+        return used_worker.tag
 
     def register_cannon_rush_worker(self, tag: int) -> None:
         """Register a worker as a cannon rush worker.
@@ -163,3 +229,63 @@ class CannonRushManager(Manager, IManagerMediator):
         """
         if unit_tag in self.cannon_rush_worker_tags:
             self.cannon_rush_worker_tags.remove(unit_tag)
+
+    def secure_initial_cannon(self, cannon_workers: Units) -> bool:
+        """Place the first cannon that will be used as our anchor for the cannon rush.
+
+        Parameters
+        ----------
+        cannon_workers : Units
+            The Probes currently assigned as rushers.
+
+        Returns
+        -------
+        bool :
+            Whether this step should be considered completed.
+
+        """
+        initial_cannons = self.manager_mediator.get_units_in_range(
+            start_points=[self.cannon_placement.initial_cannon],
+            distances=2,
+            query_tree=UnitTreeQueryType.AllOwn,
+        )
+        if initial_cannons:
+            if initial_cannons[0].ready.amount != 0:
+                # a cannon is ready! success! victory is assured!
+                # TODO: remove the above
+                return True
+            else:
+                self.defend_pending_cannon(cannon_workers)
+
+        # no cannons have been placed, time to fix that
+        next_building = self.cannon_placement.next_building
+        # nothing to place
+        if not next_building or self.ai.minerals < 100:
+            self._keep_workers_safe(cannon_workers)
+            return False
+
+    def defend_pending_cannon(self, cannon_workers: Units) -> None:
+        """A cannon has been started but it isn't finished; defend it.
+
+        Parameters
+        ----------
+        cannon_workers : Units
+            The Probes currently assigned as rushers.
+
+        Returns
+        -------
+
+        """
+
+    def cancel_pylon(self, pylon: Unit):
+        """Prevent Pylons we don't need from finishing.
+
+        Parameters
+        ----------
+        pylon :
+            The Pylon to cancel
+
+        Returns
+        -------
+
+        """

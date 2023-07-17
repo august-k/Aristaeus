@@ -9,13 +9,14 @@ from MapAnalyzer import MapData
 from MapAnalyzer.Pather import draw_circle
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
-from sc2.position import Point2
+from sc2.position import Point2, Point3
 from sc2.unit import Unit
 from scipy.signal import convolve2d
 
 from bot.consts import (
     BLOCKING,
     DESIRABILITY_KERNEL,
+    FINAL_PLACEMENT,
     INVALID_BLOCK,
     LOCATION,
     POINTS,
@@ -44,7 +45,7 @@ class CannonPlacement:
         self.map_data: MapData = map_data
         self.basic_cannon_grid = self.map_data.get_walling_grid()
 
-        self.initial_cannon = self.ai.enemy_start_locations[0].rounded
+        self.initial_cannon = Point2((31, 99))
         self.initial_xbound = (
             int(max([0, self.initial_cannon.x - 20])),
             int(
@@ -92,6 +93,7 @@ class CannonPlacement:
 
     def update(self) -> None:
         """Update the cannon placements."""
+        # self.debug_coordinates()
         if self.calculate_next_pylon:
             self.generate_basic_cannon_grid([self.initial_cannon.position])
             target_region = self.map_data.in_region_p(self.initial_cannon)
@@ -113,18 +115,29 @@ class CannonPlacement:
                     #         self.current_walling_path = possible_path
                     # else:
                     self.current_walling_path = possible_path
-        if (
-            self.ai.structures(UnitID.FORGE).amount
-            and not self.ai.structures(UnitID.PHOTONCANNON).amount
-            and self.ai.state.psionic_matrix.covers(self.initial_cannon)
-        ):
-            self.next_building = {
-                LOCATION: self.initial_cannon,
-                TYPE_ID: UnitID.PHOTONCANNON,
-            }
-        elif self.current_walling_path:
+        # if (
+        #     self.ai.structures(UnitID.FORGE).amount
+        #     and not self.ai.structures(UnitID.PHOTONCANNON).amount
+        #     and self.ai.state.psionic_matrix.covers(self.initial_cannon)
+        # ):
+        #     self.next_building = {
+        #         LOCATION: self.initial_cannon,
+        #         TYPE_ID: UnitID.PHOTONCANNON,
+        #     }
+        # el
+        if self.current_walling_path:
+            if self.wall_is_finished(self.initial_cannon):
+                self.next_building = {
+                    LOCATION: self.initial_cannon,
+                    TYPE_ID: UnitID.PHOTONCANNON,
+                    FINAL_PLACEMENT: False,
+                }
+                return
             if next_building_location := self.get_next_walling_position():
                 self.next_building = {
+                    FINAL_PLACEMENT: self.placement_would_complete_wall(
+                        next_building_location
+                    ),
                     LOCATION: next_building_location,
                     TYPE_ID: UnitID.PYLON,
                 }
@@ -307,17 +320,45 @@ class CannonPlacement:
         ]
         return Point2(pylon_pos)
 
-    def wall_is_finished(self, cannon_placement: Point2) -> bool:
+    def wall_is_finished(
+        self, cannon_placement: Point2, grid_override: Optional[np.array] = None
+    ) -> bool:
         """Determine if the wall is completed."""
-        if path := self.map_data.clockwise_pathfind(
+        if wall_path := self.map_data.clockwise_pathfind(
             start=self.wall_start_point,
             goal=self.wall_start_point,
             origin=cannon_placement,
-            grid=self.basic_cannon_grid,
+            grid=self.basic_cannon_grid if grid_override is None else grid_override,
         ):
-            if len(path) < 30:
+            if len(wall_path) < 40:
                 return True
         return False
+
+    def placement_would_complete_wall(self, placement: Point2, _size: int = 2) -> bool:
+        """Check whether this placement will complete the wall.
+
+        Used to make sure our Probe is on the correct side of the wall.
+
+        Warning
+        -------
+        Only supports size=2
+
+        Parameters
+        ----------
+        placement : Point2
+            Where the building is being placed
+        _size : int
+            Side length of the building's footprint.
+
+        Returns
+        -------
+        bool :
+            Whether this placement will complete the wall.
+
+        """
+        fake_grid = self.basic_cannon_grid.copy()
+        modify_two_by_two(fake_grid, placement, np.inf)
+        return self.wall_is_finished(self.initial_cannon, grid_override=fake_grid)
 
     def calculate_start_point(
         self,
@@ -361,3 +402,23 @@ class CannonPlacement:
         if cannon_positions:
             for cannon in cannon_positions:
                 modify_two_by_two(self.basic_cannon_grid, cannon, np.inf)
+
+    def debug_coordinates(self):
+        """Draw coordinates on the screen."""
+        for i in range(
+            int(self.initial_cannon.x - 15), int(self.initial_cannon.x + 15)
+        ):
+            for j in range(
+                int(self.initial_cannon.y - 15), int(self.initial_cannon.y + 15)
+            ):
+                point = Point2((i, j))
+                height = self.ai.get_terrain_z_height(point)
+                p_min = Point3((point.x, point.y, height + 0.1))
+                p_max = Point3((point.x + 1, point.y + 1, height + 0.1))
+                self.ai.client.debug_box_out(p_min, p_max, Point3((0, 0, 127)))
+                if height >= 9:
+                    self.ai.client.debug_text_world(
+                        f"x={i}\ny={j}",
+                        Point3((p_min.x, p_min.y + 0.75, p_min.z)),
+                        (127, 0, 255),
+                    )

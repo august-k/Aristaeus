@@ -68,6 +68,7 @@ def main():
                 Computer(random_race, Difficulty.CheatVision, ai_build=AIBuild.Macro),
             ],
             realtime=False,
+            random_seed=2564,
         )
 
 

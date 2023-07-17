@@ -2,6 +2,7 @@ import numpy as np
 
 # cannon rush tools
 BLOCKING = "blocking"
+FINAL_PLACEMENT = "final_placement"
 LOCATION = "location"
 POINTS = "points"
 SCORE = "score"
