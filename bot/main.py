@@ -1,15 +1,15 @@
-from typing import Any, Optional
+from typing import Optional
 
 from ares import AresBot, ManagerMediator, Hub
 from ares.behaviors.macro import Mining
 
 from bot.managers.cannon_rush_manager import CannonRushManager
-
-from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from bot.managers.production_manager import ProductionManager
 
 
 class MyBot(AresBot):
     cannon_rush_manager: CannonRushManager
+    production_manager: ProductionManager
 
     def __init__(self, game_step_override: Optional[int] = None):
         """Initiate custom bot
@@ -22,12 +22,13 @@ class MyBot(AresBot):
         """
         super().__init__(game_step_override)
 
-        self.army_comp: dict[UnitID, Any] = {}
-
     async def on_step(self, iteration: int) -> None:
         await super(MyBot, self).on_step(iteration)
 
         self.register_behavior(Mining())
+
+        if self.cannon_rush_manager.cannon_rush_complete:
+            await self.production_manager.update(iteration)
 
     async def register_managers(self) -> None:
         """
@@ -38,6 +39,8 @@ class MyBot(AresBot):
         self.cannon_rush_manager = CannonRushManager(
             self, self.config, manager_mediator
         )
+        # update this one manually
+        self.production_manager = ProductionManager(self, self.config, manager_mediator)
 
         self.manager_hub = Hub(
             self,
