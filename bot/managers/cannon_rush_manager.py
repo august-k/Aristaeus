@@ -129,6 +129,11 @@ class CannonRushManager(Manager, IManagerMediator):
                     tags=self.cannon_rush_worker_tags,
                     role=UnitRole.CONTROL_GROUP_ONE,
                 )
+                # remove from mining, otherwise can't assign new workers to min field
+                for worker in available_workers:
+                    self.manager_mediator.remove_worker_from_mineral(
+                        worker_tag=worker.tag
+                    )
             return
 
         # make sure we're keeping these units
@@ -155,6 +160,11 @@ class CannonRushManager(Manager, IManagerMediator):
         if next_building:
             used_tag = self.place_building(next_building, worker_units)
             self._keep_workers_safe([w for w in worker_units if w.tag != used_tag])
+
+    @property
+    def cannon_rush_complete(self) -> bool:
+        # TODO: Rework this as needed
+        return UnitID.PHOTONCANNON in self.manager_mediator.get_own_structures_dict
 
     def _keep_workers_safe(self, units: Union[Units, List[Unit]]):
         for unit in units:
