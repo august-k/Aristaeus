@@ -13,6 +13,7 @@ from sc2.position import Point2, Point3
 from sc2.unit import Unit
 from scipy.signal import convolve2d
 
+from ares import ManagerMediator
 from bot.consts import (
     BLOCKING,
     DESIRABILITY_KERNEL,
@@ -31,7 +32,7 @@ from .grids import modify_two_by_two
 class CannonPlacement:
     """Class containing details of cannon placement."""
 
-    def __init__(self, ai: BotAI, map_data: MapData):
+    def __init__(self, ai: BotAI, map_data: MapData, manager_mediator: ManagerMediator):
         """Set up the CannonPlacement tools.
 
         Parameters
@@ -43,6 +44,7 @@ class CannonPlacement:
         """
         self.ai: BotAI = ai
         self.map_data: MapData = map_data
+        self.manager_mediator: ManagerMediator = manager_mediator
         self.basic_cannon_grid = self.map_data.get_walling_grid()
 
         self.initial_cannon = Point2((31, 99))
@@ -127,6 +129,7 @@ class CannonPlacement:
         # el
         if self.current_walling_path:
             if self.wall_is_finished(self.initial_cannon):
+                # TODO: cycle cannons so we can keep things going
                 self.next_building = {
                     LOCATION: self.initial_cannon,
                     TYPE_ID: UnitID.PHOTONCANNON,
@@ -315,8 +318,20 @@ class CannonPlacement:
             return None
         possible_positions = np.array(scores[max(scores)])
         cannon_array = np.array(self.initial_cannon)
+        # pylon_pos = possible_positions[
+        #     np.argmin(np.sum((possible_positions - cannon_array) ** 2, axis=1))
+        # ]
         pylon_pos = possible_positions[
-            np.argmin(np.sum((possible_positions - cannon_array) ** 2, axis=1))
+            np.argmin(
+                np.sum(
+                    (
+                        possible_positions
+                        - self.manager_mediator.get_enemy_ramp.bottom_center
+                    )
+                    ** 2,
+                    axis=1,
+                )
+            )
         ]
         return Point2(pylon_pos)
 
@@ -402,6 +417,48 @@ class CannonPlacement:
         if cannon_positions:
             for cannon in cannon_positions:
                 modify_two_by_two(self.basic_cannon_grid, cannon, np.inf)
+
+    def get_high_ground_point_near_cannon(
+        self, cannon_position: Point2
+    ) -> Optional[Point2]:
+        """Find some high ground near a cannon.
+
+        Parameters
+        ----------
+        cannon_position : Point2
+            The cannon position we want to be near
+
+        Returns
+        -------
+        Optional[Point2] :
+            The high ground point.
+
+        """
+        target_height = self.ai.get_terrain_height(self.ai.enemy_start_locations[0])
+        grid = self.ai.game_info.terrain_height.data_numpy
+        point = (int(cannon_position[0]), int(cannon_position[1]))
+        disk = tuple(draw_circle(point, 7, shape=grid.shape))
+        target_weight_cond = np.logical_and(
+            abs(np.abs(grid[disk]) - target_height) < 11,
+            grid[disk] < np.inf,
+        )
+        if np.any(target_weight_cond):
+            blocks, non_blocks = self.perform_convolutions(
+                x_bound=(int(cannon_position.x - 7), int(cannon_position.x + 7)),
+                y_bound=(int(cannon_position.y - 7), int(cannon_position.y + 7)),
+                terrain_height={target_height},
+                pathing_grid=self.map_data.get_pyastar_grid(),
+            )
+            possible_points = np.column_stack(
+                (disk[0][target_weight_cond], disk[1][target_weight_cond])
+            )
+            for point in blocks:
+                if point in possible_points:
+                    return Point2(point)
+            for point in non_blocks:
+                if point in possible_points:
+                    return Point2(point)
+        return None
 
     def debug_coordinates(self):
         """Draw coordinates on the screen."""

@@ -68,7 +68,8 @@ def main():
                 Computer(random_race, Difficulty.CheatVision, ai_build=AIBuild.Macro),
             ],
             realtime=False,
-            random_seed=2564,
+            random_seed=2,
+            save_replay_as="GresvanCannonRush.SC2Replay",
         )
 
 

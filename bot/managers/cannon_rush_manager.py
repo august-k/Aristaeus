@@ -78,10 +78,19 @@ class CannonRushManager(Manager, IManagerMediator):
         self.high_ground_pylon_established: bool = False
         self.initial_cannon_placed: bool = False
         self.custom_build_order_complete: bool = False
+        self.enemy_main_height: int = self.ai.get_terrain_height(
+            self.ai.enemy_start_locations[0]
+        )
+
+        # cannon worker roles
+        self.cannon_placers = UnitRole.CONTROL_GROUP_ONE
+        self.chaos_probes = UnitRole.CONTROL_GROUP_TWO
 
     async def initialise(self) -> None:
         self.map_data: MapData = self.manager_mediator.get_map_data_object
-        self.cannon_placement: CannonPlacement = CannonPlacement(self.ai, self.map_data)
+        self.cannon_placement: CannonPlacement = CannonPlacement(
+            self.ai, self.map_data, self.manager_mediator
+        )
 
     def manager_request(
         self,
@@ -153,9 +162,15 @@ class CannonRushManager(Manager, IManagerMediator):
 
         # protocol for getting the first cannon placed
         if not self.initial_cannon_placed:
-            self.initial_cannon_placed = self.secure_initial_cannon(worker_units)
+            self.initial_cannon_placed = self.secure_initial_cannon()
+        else:
+            self.cause_chaos()
 
         # cannon has been placed, activate contain protocol
+        for unit in self.ai.units({UnitID.TEMPEST, UnitID.VOIDRAY}):
+            self.ai.register_behavior(
+                AMove(unit=unit, target=self.ai.enemy_start_locations[0])
+            )
 
     def _keep_workers_safe(self, units: Union[Units, List[Unit]]):
         grid = self.manager_mediator.get_ground_avoidance_grid
@@ -238,6 +253,7 @@ class CannonRushManager(Manager, IManagerMediator):
             nearby_enemies: Dict[int, Units] = self.manager_mediator.get_units_in_range(
                 start_points=nearby_pylons[0].filter(
                     lambda u: u.type_id == UnitID.PYLON
+                    and self.ai.get_terrain_height(u.position) != self.enemy_main_height
                 ),
                 distances=5,
                 query_tree=UnitTreeQueryType.AllEnemy,
@@ -280,13 +296,11 @@ class CannonRushManager(Manager, IManagerMediator):
         if unit_tag in self.cannon_rush_worker_tags:
             self.cannon_rush_worker_tags.remove(unit_tag)
 
-    def secure_initial_cannon(self, cannon_workers: Union[Units, List[Unit]]) -> bool:
+    def secure_initial_cannon(self) -> bool:
         """Place the first cannon that will be used as our anchor for the cannon rush.
 
         Parameters
         ----------
-        cannon_workers : Units
-            The Probes currently assigned as rushers.
 
         Returns
         -------
@@ -305,85 +319,135 @@ class CannonRushManager(Manager, IManagerMediator):
 
         # there's some type of cannon
         if initial_cannons.amount != 0:
-            self.defend_pending_cannon(cannon_workers)
+            self.defend_pending_cannon()
             return False
 
         # no cannons have been placed, time to fix that
         next_building = self.cannon_placement.next_building
 
-        used_worker_tag: int = 0
-        # place something if we should
-        if next_building and self.ai.minerals > 100:
-            used_worker_tag = self.place_building(next_building, cannon_workers)
+        used_worker_tags: Set[int] = set()
+        if cannon_workers := self.manager_mediator.get_units_from_role(
+            role=self.cannon_placers
+        ):
+            # place something if we should
+            if next_building and self.ai.minerals > 100:
+                used_worker_tags.add(self.place_building(next_building, cannon_workers))
+
+        self.cause_chaos()
 
         # keep unordered probes safe
-        self._keep_workers_safe([p for p in cannon_workers if p.tag != used_worker_tag])
+        self._keep_workers_safe(
+            [p for p in cannon_workers if p.tag not in used_worker_tags]
+        )
 
         return False
 
-    def defend_pending_cannon(self, cannon_workers: Units) -> None:
+    def defend_pending_cannon(self) -> None:
         """A cannon has been started but it isn't finished; defend it.
 
         Parameters
         ----------
-        cannon_workers : Units
-            The Probes currently assigned as rushers.
 
         Returns
         -------
 
         """
-        # re-wall ASAP if needed
-        used_worker_tag: int = 0
-        if (
-            self.cannon_placement.next_building
-            # we already placed the cannon
-            and self.cannon_placement.next_building[TYPE_ID] != UnitID.PHOTONCANNON
+        # if cannon placers exist, place Pylons and Cannons near the initial point
+        if cannon_placers := self.manager_mediator.get_units_from_role(
+            role=self.cannon_placers
         ):
-            used_worker_tag = self.place_building(
-                self.cannon_placement.next_building, cannon_workers
+            structure_id: UnitID = UnitID.PHOTONCANNON
+            pylons_near_cannon = self.get_pylons_near_point(
+                point=self.cannon_placement.initial_cannon,
+                distance=7.0,
             )
-        # fight nearby units if we have shields
-        combat_probes = [p for p in cannon_workers if p.tag != used_worker_tag]
-
-        if combat_probes:
-            close_enemies = self.manager_mediator.get_units_in_range(
-                start_points=combat_probes,
-                distances=10,
-                query_tree=UnitTreeQueryType.EnemyGround,
-                return_as_dict=True,
-            )
-            for probe in combat_probes:
-                if (
-                    self.ai.state.psionic_matrix.covers(probe.position)
-                    and self.ai.can_afford(UnitID.PHOTONCANNON)
-                    and self.ai.structures(UnitID.PHOTONCANNON).amount < 2
-                ):
-                    self.manager_mediator.build_with_specific_worker(
-                        worker=probe,
-                        structure_type=UnitID.PHOTONCANNON,
-                        pos=probe.position,
-                        assign_role=False,
-                    )
-                elif self.ai.can_afford(UnitID.PYLON):
-                    self.manager_mediator.build_with_specific_worker(
-                        worker=probe,
-                        structure_type=UnitID.PHOTONCANNON,
-                        pos=probe.position,
-                        assign_role=False,
-                    )
-                elif close_enemies[probe.tag] and probe.shield > 1:
-                    target = cy_closest_to(
-                        self.cannon_placement.initial_cannon, close_enemies[probe.tag]
-                    )
-                    self.ai.register_behavior(AMove(unit=probe, target=target))
-                else:
-                    self.ai.register_behavior(
-                        KeepUnitSafe(
-                            unit=probe,
-                            grid=self.manager_mediator.get_ground_avoidance_grid,
+            healthy_pylons = [
+                p for p in pylons_near_cannon if p.health_percentage >= 0.75
+            ]
+            if not healthy_pylons:
+                structure_id = UnitID.PYLON
+            locations = np.array(list(self.cannon_placement.invalid_blocks))
+            for placer in cannon_placers:
+                # do one thing at a time
+                if placer.orders:
+                    continue
+                target_position = Point2(
+                    locations[
+                        np.argmin(
+                            np.sum(
+                                (locations - placer.position) ** 2,
+                                axis=1,
+                            )
                         )
+                    ]
+                )
+                self.manager_mediator.build_with_specific_worker(
+                    worker=placer,
+                    structure_type=structure_id,
+                    pos=target_position,
+                    assign_role=False,
+                )
+        self.cause_chaos()
+
+    def cause_chaos(self) -> None:
+        """Cause some chaos in their main.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+
+        """
+        if chaos_probes := self.manager_mediator.get_units_from_role(
+            role=self.chaos_probes,
+        ):
+            high_ground_target = (
+                self.cannon_placement.get_high_ground_point_near_cannon(
+                    self.cannon_placement.initial_cannon
+                )
+            )
+            grid = self.manager_mediator.get_ground_avoidance_grid
+            building_placed: bool = False
+            for probe in chaos_probes:
+                if not building_placed and high_ground_target:
+                    structure_id = UnitID.PYLON
+                    # can't use python-sc2's psionic_matrix.covers because it doesn't
+                    # check the height of the pylon
+                    if possible_pylons := self.get_pylons_near_point(
+                        point=high_ground_target, distance=6.0
+                    ):
+                        if (
+                            possible_pylons.filter(
+                                lambda u: u.build_progress == 1.0
+                                and self.ai.get_terrain_height(u)
+                                == self.enemy_main_height
+                                and u.health_percentage >= 0.75
+                            ).amount
+                            >= 0
+                        ):
+                            structure_id = UnitID.PHOTONCANNON
+                    self.manager_mediator.build_with_specific_worker(
+                        worker=probe,
+                        structure_type=structure_id,
+                        pos=high_ground_target,
+                        assign_role=False,
                     )
+                    building_placed = True
+                    continue
+                maneuver: CombatManeuver = CombatManeuver()
+                maneuver.add(KeepUnitSafe(unit=probe, grid=grid))
+                maneuver.add(
+                    AMove(
+                        unit=probe,
+                        target=high_ground_target.towards_with_random_angle(
+                            self.cannon_placement.initial_cannon, distance=3
+                        )
+                        if high_ground_target
+                        else self.ai.enemy_start_locations[0],
+                    )
+                )
+                self.ai.register_behavior(maneuver)
 
     def get_cannon_workers(self, amount: int = 2) -> Union[Units, List[Unit]]:
         """Get workers for the cannon rush.
@@ -396,8 +460,13 @@ class CannonRushManager(Manager, IManagerMediator):
         """
         worker_units = [self.ai.unit_tag_dict[t] for t in self.cannon_rush_worker_tags]
 
-        # steal any idle ones
         if len(worker_units) < amount:
+            # figure out which role this worker needs
+            if len(worker_units) < 1:
+                target_role = self.cannon_placers
+            else:
+                target_role = self.chaos_probes
+            # steal any idle ones
             if (
                 available_workers := self.manager_mediator.get_units_from_role(
                     role=UnitRole.GATHERING
@@ -408,8 +477,8 @@ class CannonRushManager(Manager, IManagerMediator):
                 self.cannon_rush_worker_tags |= available_workers.tags
                 worker_units.extend(available_workers)
                 self.manager_mediator.batch_assign_role(
-                    tags=self.cannon_rush_worker_tags,
-                    role=UnitRole.CONTROL_GROUP_ONE,
+                    tags=available_workers.tags,
+                    role=target_role,
                 )
                 for worker in available_workers:
                     self.manager_mediator.remove_worker_from_mineral(
@@ -417,11 +486,6 @@ class CannonRushManager(Manager, IManagerMediator):
                     )
                 return worker_units
 
-        # make sure we're keeping these units
-        self.manager_mediator.batch_assign_role(
-            tags=self.cannon_rush_worker_tags,
-            role=UnitRole.CONTROL_GROUP_ONE,
-        )
         return worker_units
 
     @property
@@ -465,11 +529,12 @@ class CannonRushManager(Manager, IManagerMediator):
 
         # get our first pylon at home
         if UnitID.PYLON not in structure_dict:
-            if self.ai.can_afford(UnitID.PYLON):
+            if self.ai.minerals >= 25:
                 self.build_structure_at_home_ramp(
                     structure_type=UnitID.PYLON,
                     location=list(self.ai.main_base_ramp.corner_depots)[0],
                     amount=1,
+                    take_nexus_probe=True,
                 )
         else:
             # build workers up to 16
@@ -479,7 +544,7 @@ class CannonRushManager(Manager, IManagerMediator):
                         self.ai.train(UnitID.PROBE)
             # then build the forge
             else:
-                if self.ai.can_afford(UnitID.FORGE):
+                if self.ai.minerals >= 75:
                     self.build_structure_at_home_ramp(
                         structure_type=UnitID.FORGE,
                         location=self.ai.main_base_ramp.barracks_in_middle,
@@ -488,7 +553,11 @@ class CannonRushManager(Manager, IManagerMediator):
         return False
 
     def build_structure_at_home_ramp(
-        self, structure_type: UnitID, location: Point2, amount: int
+        self,
+        structure_type: UnitID,
+        location: Point2,
+        amount: int,
+        take_nexus_probe: bool = False,
     ) -> None:
         """Construct buildings at the home ramp.
 
@@ -500,13 +569,21 @@ class CannonRushManager(Manager, IManagerMediator):
             Where to build the structure.
         amount : int
             How many cannon workers we need at this stage.
+        take_nexus_probe : bool
+            Whether to take the Probe nearest the Nexus, which hopefully just finished
 
         Returns
         -------
 
         """
+        closest_worker: Optional[Unit] = None
+        if take_nexus_probe:
+            closest_worker = cy_closest_to(
+                self.ai.townhalls.first.position, self.ai.workers
+            )
         if worker_container := self.get_cannon_workers(amount=amount):
             closest_worker = cy_closest_to(location, worker_container)
+        if closest_worker:
             self.manager_mediator.build_with_specific_worker(
                 worker=closest_worker,
                 structure_type=structure_type,
@@ -586,3 +663,29 @@ class CannonRushManager(Manager, IManagerMediator):
                 return False
 
         return True
+
+    def get_pylons_near_point(self, point: Point2, distance: float = 7.0) -> Units:
+        """Get Pylons within distance of the point.
+
+        Parameters
+        ----------
+        point : Point2
+            Where the cannon is.
+        distance : float
+            How far to search for Pylons.
+
+        Returns
+        -------
+        Units :
+            The Pylons near the Cannon.
+
+        """
+        if nearby_units := self.manager_mediator.get_units_in_range(
+            start_points=[point],
+            distances=distance,
+            query_tree=UnitTreeQueryType.AllOwn,
+        ):
+            return Units(
+                [u for u in nearby_units[0] if u.type_id == UnitID.PHOTONCANNON],
+                self.ai,
+            )
