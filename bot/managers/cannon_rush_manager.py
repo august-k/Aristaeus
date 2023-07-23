@@ -166,12 +166,6 @@ class CannonRushManager(Manager, IManagerMediator):
         else:
             self.cause_chaos()
 
-        # cannon has been placed, activate contain protocol
-        for unit in self.ai.units({UnitID.TEMPEST, UnitID.VOIDRAY}):
-            self.ai.register_behavior(
-                AMove(unit=unit, target=self.ai.enemy_start_locations[0])
-            )
-
     def _keep_workers_safe(self, units: Union[Units, List[Unit]]):
         grid = self.manager_mediator.get_ground_avoidance_grid
         for probe in units:

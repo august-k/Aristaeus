@@ -1,18 +1,19 @@
 from typing import TYPE_CHECKING
 
-from sc2.ids.ability_id import AbilityId
-from sc2.ids.buff_id import BuffId
-from sc2.position import Point2
-from sc2.units import Units
-
 from ares.behaviors.macro import SpawnController
 from ares.consts import UnitRole
+from ares.cython_extensions.general_utils import cy_unit_pending
 from ares.cython_extensions.geometry import cy_towards
 from ares.cython_extensions.units_utils import cy_closest_to
-from ares.managers.manager_mediator import ManagerMediator
 from ares.managers.manager import Manager
-
+from ares.managers.manager_mediator import ManagerMediator
+from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
+from sc2.ids.ability_id import AbilityId
+from sc2.ids.buff_id import BuffId
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
+from sc2.ids.upgrade_id import UpgradeId
+from sc2.position import Point2
+from sc2.units import Units
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -22,6 +23,12 @@ CORE_STRUCTURES: list[UnitID] = [
     UnitID.GATEWAY,
     UnitID.CYBERNETICSCORE,
     UnitID.STARGATE,
+]
+
+DESIRED_UPGRADES: list[UpgradeId] = [
+    UpgradeId.TEMPESTGROUNDATTACKUPGRADE,
+    UpgradeId.PROTOSSAIRARMORSLEVEL1,
+    UpgradeId.PROTOSSAIRARMORSLEVEL2,
 ]
 
 
@@ -49,8 +56,10 @@ class ProductionManager(Manager):
         """
         super().__init__(ai, config, mediator)
 
-        self._built_single_void: bool = False
+        self._built_single_oracle: bool = False
         self._built_extra_production_pylon: bool = False
+        # can use a single chrono for the oracle
+        self._oracle_chrono: bool = False
 
     async def update(self, iteration: int) -> None:
         """Handle production.
@@ -78,17 +87,19 @@ class ProductionManager(Manager):
         self._build_probes(self.ai.ready_townhalls)
         await self._build_tempest_rush_structures(building_counter, structures_dict)
         self._chrono_structures()
+        self._research_upgrades()
 
-        if not self._built_single_void:
+        # one off task to build an oracle
+        if not self._built_single_oracle:
             if (
-                self.ai.can_afford(UnitID.VOIDRAY)
+                self.ai.can_afford(UnitID.ORACLE)
                 and UnitID.FLEETBEACON in structures_dict
                 and self.ai.structures.filter(
                     lambda u: u.type_id == UnitID.STARGATE and u.is_ready and u.is_idle
                 )
             ):
-                self.ai.train(UnitID.VOIDRAY)
-                self._built_single_void = True
+                self.ai.train(UnitID.ORACLE)
+                self._built_single_oracle = True
 
     async def _build_structure(
         self,
@@ -97,6 +108,21 @@ class ProductionManager(Manager):
         max_distance: int = 20,
         random_alternative: bool = True,
     ) -> None:
+        """Reusable method to build a structure.
+
+        Automatically assigns worker and removes them from mining.
+
+        Parameters
+        ----------
+        structure_type : UnitTypeId
+            Structure we want to build
+        pos : Point2
+            Roughly where structure should go
+        max_distance : int
+            How far to search for placement
+        random_alternative : bool
+            If no placement is found, find any alternative.
+        """
         if build_pos := await self.ai.find_placement(
             structure_type,
             pos,
@@ -115,6 +141,17 @@ class ProductionManager(Manager):
         building_counter: dict[UnitID, int],
         structures_dict: dict[UnitID, Units],
     ) -> None:
+        """Here to prevent repeated logic building core structures.
+
+        Parameters
+        ----------
+        structure_id : UnitTypeId
+            What we want to build
+        building_counter : Dict[UnitTypeId, int]
+            What is currently pending in the building tracker
+        structures_dict : Dict[UnitTypeId, Units]
+            Data structure of current buildings.
+        """
         if (
             building_counter[structure_id] == 0
             and structure_id not in structures_dict
@@ -126,15 +163,23 @@ class ProductionManager(Manager):
                         structure_id,
                         cy_closest_to(self.ai.start_location, pylons).position,
                     )
-            except IndexError:
+            except KeyError:
                 pass
 
     async def _build_pylons(self, building_counter: dict[UnitID, int]) -> None:
+        """Logic for when to add pylons.
+
+        Parameters
+        ----------
+        building_counter : Dict[UnitTypeId, int]
+            What is currently pending in the building tracker
+
+        """
         if (
             self.ai.supply_left < 4
             and self.ai.already_pending(UnitID.PYLON) == 0
             and building_counter[UnitID.PYLON] == 0
-        ) or not self._built_extra_production_pylon:
+        ) or (not self._built_extra_production_pylon and self.ai.vespene > 0):
             self._built_extra_production_pylon = True
             await self._build_structure(
                 UnitID.PYLON,
@@ -146,6 +191,13 @@ class ProductionManager(Manager):
             )
 
     def _build_probes(self, ready_townhalls: Units) -> None:
+        """Add probes.
+
+        Parameters
+        ----------
+        ready_townhalls : Units
+            Current ready nexuses we can train from.
+        """
         if (
             self.ai.supply_workers < 22
             and self.ai.can_afford(UnitID.PROBE)
@@ -158,11 +210,18 @@ class ProductionManager(Manager):
     async def _build_tempest_rush_structures(
         self, building_counter: dict[UnitID, int], structures_dict: dict[UnitID, Units]
     ) -> None:
+        """Build everything we need towards Tempest tech.
+
+        building_counter : Dict[UnitTypeId, int]
+            What is currently pending in the building tracker
+        structures_dict : Dict[UnitTypeId, Units]
+            Data structure of current buildings.
+        """
+        max_gas_buildings = 2 if UnitID.GATEWAY in structures_dict else 1
         if (
-            self.ai.gas_buildings.amount < 2
+            self.ai.gas_buildings.amount < max_gas_buildings
             and self.ai.can_afford(UnitID.ASSIMILATOR)
             and building_counter[UnitID.ASSIMILATOR] == 0
-            and UnitID.GATEWAY in structures_dict
         ):
             if worker := self.ai.mediator.select_worker(
                 target_position=self.ai.start_location
@@ -193,40 +252,44 @@ class ProductionManager(Manager):
                 UnitID.FLEETBEACON, building_counter, structures_dict
             )
 
-        # add a second stargate
-        if (
-            self.ai.vespene > 260
-            and UnitID.FLEETBEACON in structures_dict
-            and UnitID.STARGATE in structures_dict
-            and len(structures_dict[UnitID.STARGATE]) == 1
-            and building_counter[UnitID.STARGATE] == 0
-        ):
-            try:
-                if pylons := structures_dict[UnitID.PYLON].filter(lambda p: p.is_ready):
-                    await self._build_structure(
-                        UnitID.STARGATE,
-                        cy_closest_to(self.ai.start_location, pylons).position,
-                    )
-            except IndexError:
-                pass
-
     def _chrono_structures(self):
+        """Decide what to chrono."""
         for nexus in self.ai.townhalls:
             if AbilityId.EFFECT_CHRONOBOOSTENERGYCOST in nexus.abilities:
-                nexuses = [
-                    n
-                    for n in self.ai.townhalls
-                    if not n.is_idle and not n.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
-                ]
-                if len(nexuses) > 0:
-                    nexus(AbilityId.EFFECT_CHRONOBOOST, nexuses[0])
-                    return
-
                 stargates = [
                     s
                     for s in self.ai.structures
-                    if not s.is_idle and not s.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
+                    if not s.is_idle
+                    and not s.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
+                    and s.type_id == UnitID.STARGATE
                 ]
                 if len(stargates) > 0:
-                    nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargates[0])
-                    return
+                    if cy_unit_pending(self.ai, UnitID.TEMPEST):
+                        nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargates[0])
+                        return
+                    if not self._oracle_chrono:
+                        nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargates[0])
+                        self._oracle_chrono = True
+
+    def _research_upgrades(self):
+        """Decide what to research."""
+        # only get upgrades if stargate is already building a tempest
+        if cy_unit_pending(self.ai, UnitID.TEMPEST) == 0:
+            return
+
+        structure_dict: dict[
+            UnitID, Units
+        ] = self.manager_mediator.get_own_structures_dict
+        for upgrade_id in DESIRED_UPGRADES:
+            researched_from: UnitID = UPGRADE_RESEARCHED_FROM[upgrade_id]
+            cost = self.ai.calculate_cost(upgrade_id)
+            # ensure there is always nearly enough for a tempest
+            # before spending all the banked vespene
+            if self.ai.vespene - cost.vespene < 160:
+                continue
+            if (
+                researched_from in structure_dict
+                and self.ai.can_afford(upgrade_id)
+                and structure_dict[researched_from].idle
+            ):
+                self.ai.research(upgrade_id)
