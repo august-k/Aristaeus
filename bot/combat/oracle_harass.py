@@ -17,7 +17,7 @@ from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.combat.base_unit import BaseUnit
-from bot.oracle_kite_forward import OracleKiteForward
+from bot.behaviors.oracle_kite_forward import OracleKiteForward
 
 if TYPE_CHECKING:
     from ares import AresBot
