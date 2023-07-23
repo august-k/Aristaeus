@@ -68,9 +68,7 @@ class TempestOffensive(BaseUnit):
                 lambda u: not u.is_memory
             )
 
-            in_attack_range: list[Unit] = [
-                u for u in cy_in_attack_range(unit, enemy_near_tempest)
-            ]
+            in_attack_range: list[Unit] = cy_in_attack_range(unit, enemy_near_tempest)
 
             if len(in_attack_range) > 0:
                 target: Unit = cy_pick_enemy_target(in_attack_range)
