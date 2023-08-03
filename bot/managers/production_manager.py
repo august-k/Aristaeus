@@ -1,9 +1,11 @@
 from typing import TYPE_CHECKING
 
-from ares.behaviors.macro import SpawnController
+from sc2.unit import Unit
+
+from ares.behaviors.macro import SpawnController, BuildStructure, AutoSupply
+from ares.behaviors.macro.macro_plan import MacroPlan
 from ares.consts import UnitRole
 from ares.cython_extensions.general_utils import cy_unit_pending
-from ares.cython_extensions.geometry import cy_towards
 from ares.cython_extensions.units_utils import cy_closest_to
 from ares.managers.manager import Manager
 from ares.managers.manager_mediator import ManagerMediator
@@ -12,7 +14,6 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.buff_id import BuffId
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.ids.upgrade_id import UpgradeId
-from sc2.position import Point2
 from sc2.units import Units
 
 if TYPE_CHECKING:
@@ -71,19 +72,31 @@ class ProductionManager(Manager):
         iteration :
             The game iteration.
         """
-        self.ai.register_behavior(
+
+        if not self._built_extra_production_pylon:
+            self.ai.register_behavior(
+                BuildStructure(self.ai.start_location, UnitID.PYLON)
+            )
+            self._built_extra_production_pylon = True
+
+        # use ares-sc2 macro behaviors for building pylons and units
+        macro_plan: MacroPlan = MacroPlan()
+        macro_plan.add(AutoSupply(base_location=self.ai.start_location))
+        macro_plan.add(
             SpawnController(
                 army_composition_dict={
                     UnitID.TEMPEST: {"proportion": 1.0, "priority": 0},
                 }
             )
         )
+        self.ai.register_behavior(macro_plan)
+
+        # custom behavior for all other production, using ares-sc2 to help
         building_counter: dict[UnitID, int] = self.manager_mediator.get_building_counter
         structures_dict: dict[
-            UnitID, Units
+            UnitID, list[Unit]
         ] = self.manager_mediator.get_own_structures_dict
 
-        await self._build_pylons(building_counter)
         self._build_probes(self.ai.ready_townhalls)
         await self._build_tempest_rush_structures(building_counter, structures_dict)
         self._chrono_structures()
@@ -93,7 +106,7 @@ class ProductionManager(Manager):
         if not self._built_single_oracle:
             if (
                 self.ai.can_afford(UnitID.ORACLE)
-                and UnitID.FLEETBEACON in structures_dict
+                and len(structures_dict[UnitID.FLEETBEACON]) > 0
                 and self.ai.structures.filter(
                     lambda u: u.type_id == UnitID.STARGATE and u.is_ready and u.is_idle
                 )
@@ -101,93 +114,26 @@ class ProductionManager(Manager):
                 self.ai.train(UnitID.ORACLE)
                 self._built_single_oracle = True
 
-    async def _build_structure(
-        self,
-        structure_type: UnitID,
-        pos: Point2,
-        max_distance: int = 20,
-        random_alternative: bool = True,
-    ) -> None:
-        """Reusable method to build a structure.
+    def _structure_present_or_pending(self, structure_type: UnitID) -> bool:
+        return (
+            len(self.manager_mediator.get_own_structures_dict[structure_type]) > 0
+            or self.manager_mediator.get_building_counter[structure_type] > 0
+        )
 
-        Automatically assigns worker and removes them from mining.
-
-        Parameters
-        ----------
-        structure_type : UnitTypeId
-            Structure we want to build
-        pos : Point2
-            Roughly where structure should go
-        max_distance : int
-            How far to search for placement
-        random_alternative : bool
-            If no placement is found, find any alternative.
-        """
-        if build_pos := await self.ai.find_placement(
-            structure_type,
-            pos,
-            random_alternative=random_alternative,
-            max_distance=max_distance,
-        ):
-            if worker := self.ai.mediator.select_worker(target_position=build_pos):
-                self.ai.mediator.build_with_specific_worker(
-                    worker=worker, structure_type=structure_type, pos=build_pos
-                )
-                self.ai.mediator.assign_role(tag=worker.tag, role=UnitRole.BUILDING)
-
-    async def _build_core_structure(
-        self,
-        structure_id: UnitID,
-        building_counter: dict[UnitID, int],
-        structures_dict: dict[UnitID, Units],
-    ) -> None:
+    async def _build_core_structure(self, structure_id: UnitID) -> None:
         """Here to prevent repeated logic building core structures.
 
         Parameters
         ----------
         structure_id : UnitTypeId
             What we want to build
-        building_counter : Dict[UnitTypeId, int]
-            What is currently pending in the building tracker
-        structures_dict : Dict[UnitTypeId, Units]
-            Data structure of current buildings.
         """
         if (
-            building_counter[structure_id] == 0
-            and structure_id not in structures_dict
+            not self._structure_present_or_pending(structure_id)
             and self.ai.tech_requirement_progress(structure_id) >= 1.0
         ):
-            try:
-                if pylons := structures_dict[UnitID.PYLON].filter(lambda p: p.is_ready):
-                    await self._build_structure(
-                        structure_id,
-                        cy_closest_to(self.ai.start_location, pylons).position,
-                    )
-            except KeyError:
-                pass
-
-    async def _build_pylons(self, building_counter: dict[UnitID, int]) -> None:
-        """Logic for when to add pylons.
-
-        Parameters
-        ----------
-        building_counter : Dict[UnitTypeId, int]
-            What is currently pending in the building tracker
-
-        """
-        if (
-            self.ai.supply_left < 4
-            and self.ai.already_pending(UnitID.PYLON) == 0
-            and building_counter[UnitID.PYLON] == 0
-        ) or (not self._built_extra_production_pylon and self.ai.vespene > 0):
-            self._built_extra_production_pylon = True
-            await self._build_structure(
-                UnitID.PYLON,
-                Point2(
-                    cy_towards(
-                        self.ai.start_location, self.ai.game_info.map_center, 7.0
-                    )
-                ),
+            self.ai.register_behavior(
+                BuildStructure(self.ai.start_location, structure_id)
             )
 
     def _build_probes(self, ready_townhalls: Units) -> None:
@@ -208,7 +154,9 @@ class ProductionManager(Manager):
                     nexus.train(UnitID.PROBE)
 
     async def _build_tempest_rush_structures(
-        self, building_counter: dict[UnitID, int], structures_dict: dict[UnitID, Units]
+        self,
+        building_counter: dict[UnitID, int],
+        structures_dict: dict[UnitID, list[Unit]],
     ) -> None:
         """Build everything we need towards Tempest tech.
 
@@ -236,39 +184,47 @@ class ProductionManager(Manager):
                 )
                 self.ai.mediator.assign_role(tag=worker.tag, role=UnitRole.BUILDING)
 
+        ready_pylons: list[Unit] = [
+            p for p in structures_dict[UnitID.PYLON] if p.is_ready
+        ]
+        if not ready_pylons:
+            return
+
         for core_structure_id in CORE_STRUCTURES:
-            await self._build_core_structure(
-                core_structure_id, building_counter, structures_dict
-            )
+            await self._build_core_structure(core_structure_id)
 
         # add fleetbeacon separate, since `tech_requirement_progress` doesn't work
-        if (
-            UnitID.FLEETBEACON not in structures_dict
-            and UnitID.STARGATE in structures_dict
-            and structures_dict[UnitID.STARGATE].ready
-            and building_counter[UnitID.FLEETBEACON] == 0
-        ):
-            await self._build_core_structure(
-                UnitID.FLEETBEACON, building_counter, structures_dict
-            )
+        if not self._structure_present_or_pending(UnitID.FLEETBEACON) and [
+            s for s in structures_dict[UnitID.STARGATE] if s.is_ready
+        ]:
+            await self._build_core_structure(UnitID.FLEETBEACON)
 
     def _chrono_structures(self):
         """Decide what to chrono."""
+        stargates: list[Unit] = self.manager_mediator.get_own_structures_dict[
+            UnitID.STARGATE
+        ]
         for nexus in self.ai.townhalls:
-            if AbilityId.EFFECT_CHRONOBOOSTENERGYCOST in nexus.abilities:
-                stargates = [
+            if nexus.energy >= 50:
+                non_idle_stargates = [
                     s
-                    for s in self.ai.structures
+                    for s in stargates
                     if not s.is_idle
                     and not s.has_buff(BuffId.CHRONOBOOSTENERGYCOST)
                     and s.type_id == UnitID.STARGATE
                 ]
-                if len(stargates) > 0:
+                if len(non_idle_stargates) > 0:
                     if cy_unit_pending(self.ai, UnitID.TEMPEST):
-                        nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargates[0])
+                        nexus(
+                            AbilityId.EFFECT_CHRONOBOOSTENERGYCOST,
+                            non_idle_stargates[0],
+                        )
                         return
                     if not self._oracle_chrono:
-                        nexus(AbilityId.EFFECT_CHRONOBOOSTENERGYCOST, stargates[0])
+                        nexus(
+                            AbilityId.EFFECT_CHRONOBOOSTENERGYCOST,
+                            non_idle_stargates[0],
+                        )
                         self._oracle_chrono = True
 
     def _research_upgrades(self):
@@ -278,7 +234,7 @@ class ProductionManager(Manager):
             return
 
         structure_dict: dict[
-            UnitID, Units
+            UnitID, list[Unit]
         ] = self.manager_mediator.get_own_structures_dict
         for upgrade_id in DESIRED_UPGRADES:
             researched_from: UnitID = UPGRADE_RESEARCHED_FROM[upgrade_id]
@@ -288,8 +244,8 @@ class ProductionManager(Manager):
             if self.ai.vespene - cost.vespene < 160:
                 continue
             if (
-                researched_from in structure_dict
-                and self.ai.can_afford(upgrade_id)
-                and structure_dict[researched_from].idle
+                self.ai.can_afford(upgrade_id)
+                and len([s for s in structure_dict[researched_from] if s.is_idle]) > 0
             ):
-                self.ai.research(upgrade_id)
+                if self.ai.research(upgrade_id):
+                    return

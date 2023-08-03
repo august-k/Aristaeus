@@ -131,6 +131,7 @@ class CannonRushManager(Manager, IManagerMediator):
         -------
 
         """
+        return
         # don't do anything if the build order is still running
         if not self.ai.build_order_runner.build_completed:
             return
@@ -486,13 +487,7 @@ class CannonRushManager(Manager, IManagerMediator):
     def cannon_rush_complete(self) -> bool:
         # TODO: rework this as needed
         # is the cannon done?
-        if (
-            UnitID.PHOTONCANNON not in self.manager_mediator.get_own_structures_dict
-            or self.manager_mediator.get_own_structures_dict[
-                UnitID.PHOTONCANNON
-            ].ready.amount
-            < 1
-        ):
+        if len(self.manager_mediator.get_own_structures_dict[UnitID.PHOTONCANNON]) < 1:
             return False
         # enemies near cannon
         near_cannon_enemies = self.manager_mediator.get_units_in_range(
@@ -522,7 +517,7 @@ class CannonRushManager(Manager, IManagerMediator):
             return True
 
         # get our first pylon at home
-        if UnitID.PYLON not in structure_dict:
+        if len(structure_dict[UnitID.PYLON]) == 0:
             if self.ai.minerals >= 25:
                 self.build_structure_at_home_ramp(
                     structure_type=UnitID.PYLON,
@@ -534,7 +529,7 @@ class CannonRushManager(Manager, IManagerMediator):
             # build workers up to 16
             if self.ai.supply_workers + self.ai.already_pending(UnitID.PROBE) < 16:
                 if nexus := structure_dict[UnitID.NEXUS]:
-                    if self.ai.minerals >= 50 and nexus.first.is_idle:
+                    if self.ai.minerals >= 50 and nexus[0].is_idle:
                         self.ai.train(UnitID.PROBE)
             # then build the forge
             else:
