@@ -5,8 +5,8 @@ from os import getcwd, path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
-from MapAnalyzer import MapData
-from MapAnalyzer.Pather import draw_circle
+from map_analyzer import MapData
+from map_analyzer.Pather import draw_circle
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId as UnitID
 from sc2.position import Point2, Point3

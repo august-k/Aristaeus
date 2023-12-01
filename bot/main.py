@@ -37,7 +37,7 @@ class MyBot(AresBot):
         if self.cannon_rush_manager.cannon_rush_complete:
             await self.production_manager.update(iteration)
 
-    async def register_managers(self) -> None:
+    def register_managers(self) -> None:
         """
         Override the default `register_managers` in Ares, so we can
         add our own managers.
@@ -62,7 +62,7 @@ class MyBot(AresBot):
             ],
         )
 
-        await self.manager_hub.init_managers()
+        self.manager_hub.init_managers()
 
     """
     Can use `python-sc2` hooks as usual, but make a call the inherited method in the superclass

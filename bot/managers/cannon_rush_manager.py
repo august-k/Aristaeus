@@ -486,18 +486,19 @@ class CannonRushManager(Manager, IManagerMediator):
     @property
     def cannon_rush_complete(self) -> bool:
         # TODO: rework this as needed
-        # is the cannon done?
-        if len(self.manager_mediator.get_own_structures_dict[UnitID.PHOTONCANNON]) < 1:
-            return False
-        # enemies near cannon
-        near_cannon_enemies = self.manager_mediator.get_units_in_range(
-            start_points=[self.cannon_placement.initial_cannon],
-            distances=7,
-            query_tree=UnitTreeQueryType.AllEnemy,
-        )[0]
-        if near_cannon_enemies:
-            return False
         return True
+        # is the cannon done?
+        # if len(self.manager_mediator.get_own_structures_dict[UnitID.PHOTONCANNON]) < 1:
+        #     return False
+        # # enemies near cannon
+        # near_cannon_enemies = self.manager_mediator.get_units_in_range(
+        #     start_points=[self.cannon_placement.initial_cannon],
+        #     distances=7,
+        #     query_tree=UnitTreeQueryType.AllEnemy,
+        # )[0]
+        # if near_cannon_enemies:
+        #     return False
+        # return True
 
     def run_custom_build_order(self) -> bool:
         """Run the build order from here rather than the BuildOrderRunner.
